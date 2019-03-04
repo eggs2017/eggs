@@ -1,0 +1,130 @@
+//https://try.kotlinlang.org/#/UserProjects/ukcon20cshq3l31iiinad17ubd/6m83q3omgm7ceeb4r2tmmuftg7
+
+import Decision.*
+
+fun generateDeck(): List<Int> = (List(4) { 10 } + (2..9) + 11) * 4
+fun generateDealerDeck() = (generateDeck() * 6).shuffled()
+
+private operator fun <E> List<E>.times(num: Int) = (1..num).flatMap { this }
+
+fun List<Int>.trueCount(): Int = (sumBy(::cardValue) * 52 / size)
+
+fun cardValue(card: Int) = when (card) {
+    in 2..6 -> 1
+    10, 11 -> -1
+    else -> 0
+}
+
+// http://www.instructables.com/id/Card-Counting-and-Ranging-Bet-Sizes/
+fun getBetSize(trueCount: Int, bankroll: Double): Double {
+    val bettingUnit = 100.0
+    return (bettingUnit * (trueCount - 1)).coerceIn(25.0, 1000.0)
+}
+
+// https://www.blackjackapprenticeship.com/blackjack-strategy-charts/
+fun decide(hand: Hand, casinoCard: Int, firstTurn: Boolean): Decision = when {
+    firstTurn && hand.canSplit && hand.cards[0] == 11 -> SPLIT
+    firstTurn && hand.canSplit && hand.cards[0] == 9 && casinoCard !in listOf(7, 10, 11) -> SPLIT
+    firstTurn && hand.canSplit && hand.cards[0] == 8 -> SPLIT
+    firstTurn && hand.canSplit && hand.cards[0] == 7 && casinoCard <= 7 -> SPLIT
+    firstTurn && hand.canSplit && hand.cards[0] == 6 && casinoCard <= 6 -> SPLIT
+    firstTurn && hand.canSplit && hand.cards[0] == 4 && casinoCard in 5..6 -> SPLIT
+    firstTurn && hand.canSplit && hand.cards[0] in 2..3 && casinoCard <= 7 -> SPLIT
+    hand.unusedAces >= 1 && hand.points >= 19 -> STAND
+    hand.unusedAces >= 1 && casinoCard in 2..6 && hand.points == 18 -> if (firstTurn) DOUBLE else STAND
+    hand.unusedAces >= 1 && hand.points == 18 && casinoCard < 9 -> STAND
+    hand.unusedAces >= 1 && hand.points == 18 && casinoCard >= 9 -> HIT
+    hand.unusedAces >= 1 && casinoCard == 3 && hand.points >= 17 -> if (firstTurn) DOUBLE else HIT
+    hand.unusedAces >= 1 && casinoCard == 4 && hand.points >= 15 -> if (firstTurn) DOUBLE else HIT
+    hand.unusedAces >= 1 && casinoCard in 5..6 -> if (firstTurn) DOUBLE else HIT
+    hand.unusedAces >= 1 && hand.points <= 17 -> HIT
+    hand.points > 16 -> STAND
+    hand.points > 12 && casinoCard < 4 -> STAND
+    hand.points > 11 && casinoCard in 4..6 -> STAND
+    hand.points == 11 -> if (firstTurn) DOUBLE else HIT
+    hand.points == 10 && casinoCard < 10 -> if (firstTurn) DOUBLE else HIT
+    hand.points == 9 && casinoCard in 3..6 -> if (firstTurn) DOUBLE else HIT
+    else -> HIT
+}
+
+class Hand private constructor(val cards: List<Int>) {
+    val points = cards.sum()
+    val unusedAces = cards.count { it == 11 }
+    val canSplit = cards.size == 2 && cards[0] == cards[1]
+    val blackjack get() = cards.size == 2 && points == 21
+
+    operator fun plus(card: Int) = Hand.fromCards(cards + card)
+
+    companion object {
+        fun fromCards(cards: List<Int>): Hand {
+            var hand = Hand(cards)
+            if (!hand.canSplit) {
+                while (hand.unusedAces >= 1 && hand.points > 21) {
+                	hand = Hand(hand.cards - 11 + 1)
+            	}
+            }
+            return hand
+        }
+    }
+}
+
+enum class Decision { STAND, DOUBLE, HIT, SPLIT, SURRENDER }
+
+val initialMoney = 100_000.0
+
+private fun simulate(): Double {
+    val cards = generateDealerDeck().toMutableList()
+    var bankroll = initialMoney
+    val shufflePoint = cards.size * 0.25 // Depends, but good estimation https://www.blackjackinfo.com/community/threads/how-often-does-the-dealer-shuffle.7459/
+    while (cards.size > shufflePoint) {
+        val casinoCard = cards.pop()
+
+        fun playFrom(playerHand: Hand, bet: Double, firstTurn: Boolean): List<Pair<Double, Hand>> =
+                when (decide(playerHand, casinoCard, firstTurn)) {
+                    STAND -> listOf(bet to playerHand)
+                    DOUBLE -> listOf(bet * 2 to playerHand + cards.pop())
+                    HIT -> playFrom(playerHand + cards.pop(), bet, false)
+                    SPLIT -> playerHand.cards.flatMap {
+                        val newCards = listOf(it, cards.pop())
+                        val newHand = Hand.fromCards(newCards)
+                        playFrom(newHand, bet, false)
+                    }
+                    SURRENDER -> emptyList()
+                }
+
+        val betsAndHands = playFrom(
+                playerHand = Hand.fromCards(cards.pop(2)),
+                bet = getBetSize(cards.trueCount(), bankroll),
+                firstTurn = true
+        )
+
+        var casinoHand = Hand.fromCards(listOf(casinoCard, cards.pop()))
+        while (casinoHand.points < 17) {
+            casinoHand += cards.pop()
+        }
+
+        for ((bet, playerHand) in betsAndHands) {
+            when {
+                playerHand.blackjack -> bankroll += bet * if (casinoHand.blackjack) 0.0 else 1.5
+                playerHand.points > 21 -> bankroll -= bet
+                casinoHand.points > 21 -> bankroll += bet
+                casinoHand.points > playerHand.points -> bankroll -= bet
+                casinoHand.points < playerHand.points -> bankroll += bet
+                else -> bankroll -= 0
+            }
+        }
+
+        // Some other players wasting cards
+        // cards.pop(6)
+    }
+
+    val differenceInBankroll = bankroll - initialMoney
+    return differenceInBankroll
+}
+
+fun <T> MutableList<T>.pop(): T = removeAt(lastIndex)
+fun <T> MutableList<T>.pop(num: Int): List<T> = (1..num).map { pop() }
+
+fun main(args: Array<String>) {
+    (1..10000).map { simulate() }.average().let(::print)
+}
